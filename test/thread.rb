@@ -119,6 +119,18 @@ assert('Thread migrates Object') do
   assert_equal :buz,     a.buz
 end
 
+assert('Thread proc captures a var') do
+  x = 42
+  a = Thread.new { x }
+  assert_equal 42, a.join
+end
+
+assert('Thread proc does not capture a var') do
+  x = 42
+  a = Thread.new(capture: false) { x }
+  assert_equal nil, a.join
+end
+
 assert('Fixed test of issue #36') do
   a = Thread.new { ''.is_a?(String) }
   assert_true a.join

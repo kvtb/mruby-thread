@@ -307,7 +307,7 @@ migrate_irep(mrb_state *mfrom, const mrb_irep *src, mrb_state *mto) {
 }
 
 struct RProc*
-migrate_rproc(mrb_state *mexc, mrb_state *mfrom, const struct RProc *rproc, mrb_state *mto) {
+migrate_rproc(mrb_state *mexc, mrb_state *mfrom, const struct RProc *rproc, mrb_state *mto, mrb_bool capture) {
   struct RProc *newproc;
 
   if (MRB_PROC_ALIAS_P(rproc)) { // `rproc->body.mid`
@@ -320,9 +320,9 @@ migrate_rproc(mrb_state *mexc, mrb_state *mfrom, const struct RProc *rproc, mrb_
   }
 
 #ifdef MRB_PROC_ENV_P
-  if (_MRB_PROC_ENV(rproc) && MRB_PROC_ENV_P(rproc)) {
+  if (capture && _MRB_PROC_ENV(rproc) && MRB_PROC_ENV_P(rproc)) {
 #else
-  if (_MRB_PROC_ENV(rproc)) {
+  if (capture && _MRB_PROC_ENV(rproc)) {
 #endif
 #ifdef MRB_ENV_LEN
     mrb_int i, len = MRB_ENV_LEN(_MRB_PROC_ENV(rproc));
@@ -355,7 +355,7 @@ migrate_rproc(mrb_state *mexc, mrb_state *mfrom, const struct RProc *rproc, mrb_
     newproc->flags |= MRB_PROC_ENVSET;
 #endif
     if (rproc->upper) {
-      newproc->upper = migrate_rproc(mexc, mfrom, rproc->upper, mto);
+      newproc->upper = migrate_rproc(mexc, mfrom, rproc->upper, mto, capture);
     }
   }
 
@@ -392,6 +392,7 @@ path2class(mrb_state *mexc, mrb_state *mfrom, mrb_value vfrom, mrb_state *mto, c
           mrb_value superclass_path = mrb_class_path(mfrom, superclass);
           struct RClass *superclass2 = path2class(mexc,
                                                   /*mfrom=*/NULL, mrb_nil_value(),
+                                                  //mfrom, mrb_obj_value(superclass),
                                                   mto,
                                                   RSTRING_PTR(superclass_path), RSTRING_LEN(superclass_path));
           return mrb_define_class_under_id(mto, ret, cls, superclass2);
@@ -470,7 +471,7 @@ int migrate_methods_foreach_func(mrb_state* mfrom, mrb_sym sym, mrb_method_t m, 
       if (p1) {
 //      mrb_warn(mmd->mto, "migrate method %v::%n", mrb_class_path(mmd->mto, mmd->c2), sym2);
         int ai = mrb_gc_arena_save(mmd->mto);
-        const struct RProc *p2 = migrate_rproc(mmd->mexc, mfrom, p1, mmd->mto);
+        const struct RProc *p2 = migrate_rproc(mmd->mexc, mfrom, p1, mmd->mto, TRUE);
 
         mrb_method_t m3;
         MRB_METHOD_FROM_PROC(m3, p2);
@@ -483,7 +484,7 @@ int migrate_methods_foreach_func(mrb_state* mfrom, mrb_sym sym, mrb_method_t m, 
 //    mrb_warn(mmd->mto, "no migrate method %v::%n because not proc", mrb_class_path(mmd->mto, mmd->c2), sym2);
     }
   } else {
-  //mrb_warn(mmd->mto, "no migrate method %v::%n because target has it", mrb_class_path(mmd->mto, mmd->c2), sym2); // but target always have `to_s`?
+//  mrb_warn(mmd->mto, "no migrate method %v::%n because target has it", mrb_class_path(mmd->mto, mmd->c2), sym2); // but target always have `to_s`?
   }
   return 0;
 }
@@ -513,7 +514,7 @@ int migrate_vars_foreach_func(mrb_state* mfrom, mrb_sym sym, mrb_value iv, void 
         mrb_iv_foreach(mfrom, iv, migrate_vars_foreach_func, &mmd2);
       }
     } else {
-  //mrb_warn(mfrom, "no migrate var %v::%n because target has it", mmd->cls_path, sym);
+//    mrb_warn(mfrom, "no migrate var %v::%n because target has it", mrb_class_path(mmd->mto, mmd->c2), sym);
     }
   } else {
 //  mrb_warn(mmd->mto, "migrate var %v::%n", mrb_class_path(mmd->mto, mmd->c2), sym2);
@@ -573,7 +574,7 @@ mrb_thread_migrate_value(mrb_state *mexc, mrb_state *mfrom, mrb_value const v, m
     }
 
   case MRB_TT_PROC:
-    return mrb_obj_value(migrate_rproc(mexc, mfrom, mrb_proc_ptr(v), mto));
+    return mrb_obj_value(migrate_rproc(mexc, mfrom, mrb_proc_ptr(v), mto, TRUE));
   case MRB_TT_FALSE:
   case MRB_TT_TRUE:
   case MRB_TT_FIXNUM:
@@ -705,11 +706,17 @@ mrb_thread_init(mrb_state* mrb, mrb_value self) {
   *context = ctx_zero;
   mrb_data_init(self, context, &mrb_thread_context_type);
 
-  mrb_get_args(mrb, "&*", &proc, &argv, &argc);
-  if (!mrb_nil_p(proc) && MRB_PROC_CFUNC_P(mrb_proc_ptr(proc))) {
+  mrb_sym    kw_names[1]  = { mrb_intern_lit(mrb, "capture") };
+  mrb_value  kw_values[1];
+  mrb_kwargs kw_args = { 1, 0, kw_names, kw_values, NULL };
+
+  mrb_get_args(mrb, "&:*", &proc, &kw_args, &argv, &argc);
+  if (mrb_nil_p(proc)) { return self; }
+  if (MRB_PROC_CFUNC_P(mrb_proc_ptr(proc))) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "forking C defined block");
   }
-  if (mrb_nil_p(proc)) { return self; }
+
+  mrb_bool   capture = mrb_undef_p(kw_values[0]) || mrb_true_p(kw_values[0]);
 
   context->mrb_caller = mrb;
   context->mrb = mrb_open();
@@ -718,8 +725,6 @@ mrb_thread_init(mrb_state* mrb, mrb_value self) {
   }
 //migrate_all_symbols(mrb, context->mrb); // TODO: needed?
 
-  context->proc = migrate_rproc(mrb, mrb, mrb_proc_ptr(proc), context->mrb);
-  MRB_PROC_SET_TARGET_CLASS(context->proc, context->mrb->object_class);
   context->argc = argc;
   context->argv = calloc(sizeof (mrb_value), context->argc);
   context->result = mrb_nil_value();
@@ -728,6 +733,10 @@ mrb_thread_init(mrb_state* mrb, mrb_value self) {
   // move global functions, which are Object's methods actually
 //mrb_warn(mrb, "migrate Object");
   mrb_thread_migrate_value(mrb, mrb, mrb_obj_value(mrb->object_class), context->mrb);
+
+//mrb_warn(mrb, "migrate thread proc");
+  context->proc = migrate_rproc(mrb, mrb, mrb_proc_ptr(proc), context->mrb, capture);
+  MRB_PROC_SET_TARGET_CLASS(context->proc, context->mrb->object_class);
 
   for (i = 0; i < context->argc; i++) {
 //  mrb_warn(mrb, "migrate arg %v :: %Y", argv[i], argv[i]);
