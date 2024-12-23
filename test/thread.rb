@@ -104,8 +104,6 @@ class DummyObj
 end
 
 assert('Thread migrates Object') do
-  skip
-
   t = Thread.new(DummyObj.new) do |v|
     v.foo = 'foo'
     v.bar = 123
@@ -119,6 +117,61 @@ assert('Thread migrates Object') do
   assert_equal 'foo',    a.foo
   assert_equal 123,      a.bar
   assert_equal :buz,     a.buz
+end
+
+
+class DummyObj3
+  def nnn; "NN" end
+end
+
+assert('Thread migrates methods') do
+  t = Thread.new(DummyObj3.new) do |v| [v, v.nnn] end
+  a, an = t.join
+  assert_equal DummyObj3, a.class
+  assert_equal 'NN',      a.nnn
+  assert_equal 'NN',      an
+end
+
+assert('Thread accesses methods') do
+  t = Thread.new do x = DummyObj3.new; [x, x.nnn] end
+  a, an = t.join
+  assert_equal DummyObj3, a.class
+  assert_equal 'NN',      a.nnn
+  assert_equal 'NN',      an
+end
+
+
+class DummyObj2
+  def self.mmm; "MM" end
+end
+
+assert('Thread migrates self methods') do
+  t = Thread.new(DummyObj2) do |v| [v, v.mmm] end
+  a, am = t.join
+  assert_equal DummyObj2, a
+  assert_equal 'MM',      am
+  assert_equal 'MM',      a.mmm
+end
+
+assert('Thread accesses self methods') do
+  t = Thread.new do [DummyObj2, DummyObj2.mmm] end
+  a, am = t.join
+  assert_equal DummyObj2, a
+  assert_equal 'MM',      am
+  assert_equal 'MM',      a.mmm
+end
+
+
+assert('Thread proc captures a var') do
+  x = 42
+  a = Thread.new { x }
+  assert_equal 42, a.join
+end
+
+assert('Thread proc does not capture a var') do
+  x = 42
+  a = Thread.new(capture: false) { x }
+  assert_equal nil, a.join
 end
 
 assert('Fixed test of issue #36') do
